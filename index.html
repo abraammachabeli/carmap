@@ -75,6 +75,9 @@
   <button class="btn" id="btnTheme" type="button" aria-label="ღამის რეჟიმი">
     <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.39 5.39 0 0 1-4.4 2.26 5.4 5.4 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
   </button>
+  <button class="btn" id="btnTraffic" type="button" aria-label="საცობები">
+    <svg viewBox="0 0 24 24"><path d="M20 10h-3V8.86c1.72-.45 3-2 3-3.86h-3V4c0-.55-.45-1-1-1H8c-.55 0-1 .45-1 1v1H4c0 1.86 1.28 3.41 3 3.86V10H4c0 1.86 1.28 3.41 3 3.86V15H4c0 1.86 1.28 3.41 3 3.86V20c0 .55.45 1 1 1h8c.55 0 1-.45 1-1v-1.14c1.72-.45 3-2 3-3.86h-3v-1.14c1.72-.45 3-2 3-3.86zm-8 9a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm0-5a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm0-5a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></svg>
+  </button>
   <button class="btn" id="btnLocate" type="button" aria-label="ჩემი მდებარეობა">
     <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm8.94 3A8.99 8.99 0 0 0 13 3.06V1h-2v2.06A8.99 8.99 0 0 0 3.06 11H1v2h2.06A8.99 8.99 0 0 0 11 20.94V23h2v-2.06A8.99 8.99 0 0 0 20.94 13H23v-2h-2.06zM12 19a7 7 0 1 1 0-14 7 7 0 0 1 0 14z"/></svg>
   </button>
@@ -150,9 +153,209 @@
   function save() {
     try {
       var c = map.getCenter();
-      localStorage.setItem(KEY, JSON.stringify({ c: [c.lat, c.lng], z: map.getZoom(), dark: isDark }));
+      localStorage.setItem(KEY, JSON.stringify({ c: [c.lat, c.lng], z: map.getZoom(), dark: isDark, tr: trafficOn }));
     } catch (e) {}
   }
+
+  /* ---------- საცობები (Mapbox Traffic) ----------
+     ფილებს XHR-ით ვიღებთ, თავად ვშიფრავთ და canvas-ზე ვხატავთ — Mapbox GL / WebGL არ სჭირდება,
+     ამიტომ სუსტ ბრაუზერზეც მსუბუქია. უფასო ლიმიტი: თვეში 200 000 ფილი.
+     გასაღები: https://account.mapbox.com/access-tokens/ (pk.-ით იწყება) */
+  var MAPBOX_TOKEN = 'pk.eyJ1IjoiYWJyYWFtbWFjaGFiZWxpIiwiYSI6ImNtdzR5bGtmYTAyN2IyeHM5NmtnbGg5NzQifQ.oX-hL7_kDB1g3g0JLx8anw';
+  var TRAFFIC_MIN_ZOOM = 10;
+  var TRAFFIC_REFRESH = 5 * 60 * 1000;   // Mapbox მონაცემს ~8 წუთში ერთხელ ანახლებს
+  var TRAFFIC_COLOR = { low: '#1db954', moderate: '#ff9800', heavy: '#e53935', severe: '#8e0000', closed: '#444444' };
+  var TRAFFIC_RANK = { low: 1, moderate: 2, heavy: 3, severe: 4, closed: 5 };  // უარესი ზემოდან იხატება
+
+  var trafficOn = false, traffic = null, trafficTimer = null, trafficKey = 0, trafficWarned = {};
+
+  // Mapbox ვექტორული ფილის (protobuf) მინიმალური დეკოდერი: ვიღებთ მხოლოდ ხაზებს და სტრიქონულ თვისებებს
+  function decodeTile(ab) {
+    var buf = new Uint8Array(ab), pos = 0, out = [];
+    function varint() {
+      var v = 0, m = 1, b;
+      do { b = buf[pos++]; v += (b & 127) * m; m *= 128; } while (b >= 128 && pos < buf.length);
+      return v;
+    }
+    function skip(t) {
+      if (t === 0) varint();
+      else if (t === 1) pos += 8;
+      else if (t === 2) { var len = varint(); pos += len; }  // არა "pos += varint()": ის pos-ის ძველ მნიშვნელობას აიღებს
+      else if (t === 5) pos += 4;
+      else pos = buf.length;
+    }
+    function str(end) { var s = ''; while (pos < end) s += String.fromCharCode(buf[pos++]); return s; }
+    function packed() { var end = varint() + pos, a = []; while (pos < end) a.push(varint()); return a; }
+    function value(end) {
+      var v = null;
+      while (pos < end) {
+        var tag = varint();
+        if (tag === 10) v = str(varint() + pos); else skip(tag & 7);   // 10 = ველი 1, სტრიქონი
+      }
+      pos = end;
+      return v;
+    }
+    function feature(end) {
+      var f = { type: 0, tags: [], geom: [] };
+      while (pos < end) {
+        var tag = varint();
+        if (tag === 18) f.tags = packed();          // ველი 2
+        else if (tag === 24) f.type = varint();     // ველი 3
+        else if (tag === 34) f.geom = packed();     // ველი 4
+        else skip(tag & 7);
+      }
+      pos = end;
+      return f;
+    }
+    function layer(end) {
+      var keys = [], vals = [], feats = [], extent = 4096, i, j;
+      while (pos < end) {
+        var tag = varint();
+        if (tag === 26) keys.push(str(varint() + pos));         // ველი 3
+        else if (tag === 34) vals.push(value(varint() + pos));  // ველი 4
+        else if (tag === 18) feats.push(feature(varint() + pos)); // ველი 2
+        else if (tag === 40) extent = varint();                 // ველი 5
+        else skip(tag & 7);
+      }
+      pos = end;
+      for (i = 0; i < feats.length; i++) {
+        if (feats[i].type !== 2) continue;           // მხოლოდ ხაზები
+        var p = {};
+        for (j = 0; j + 1 < feats[i].tags.length; j += 2) p[keys[feats[i].tags[j]]] = vals[feats[i].tags[j + 1]];
+        var kind = p.closed === 'yes' ? 'closed' : p.congestion;
+        if (TRAFFIC_COLOR[kind]) out.push({ kind: kind, cls: p['class'], ext: extent, lines: geometry(feats[i].geom) });
+      }
+    }
+    while (pos < buf.length) {
+      var tag = varint();
+      if (tag === 26) layer(varint() + pos); else skip(tag & 7);  // ველი 3 = ფენა
+    }
+    return out;
+  }
+
+  function geometry(cmd) {
+    var lines = [], line = null, x = 0, y = 0, i = 0, j, id, n, dx, dy;
+    while (i < cmd.length) {
+      id = cmd[i] & 7; n = cmd[i] >> 3; i++;
+      if (id === 1 || id === 2) {
+        for (j = 0; j < n && i + 1 < cmd.length; j++) {
+          dx = cmd[i++]; dy = cmd[i++];
+          x += (dx >>> 1) ^ -(dx & 1);
+          y += (dy >>> 1) ^ -(dy & 1);
+          if (id === 1) { line = [x, y]; lines.push(line); }
+          else if (line) line.push(x, y);
+        }
+      } else if (id !== 7) break;
+    }
+    return lines;
+  }
+
+  function roadWidth(cls, z) {
+    var w = (cls === 'motorway' || cls === 'trunk') ? 4.5 :
+            (cls === 'primary' || cls === 'secondary') ? 3.5 :
+            (cls === 'tertiary' || cls === 'street') ? 2.5 : 2;
+    return z < 13 ? w * 0.7 : w;
+  }
+
+  // ხაზს მოძრაობის მიმართულებით მარჯვნივ ვწევთ, რომ ორმხრივი გზის ორივე მხარე ცალ-ცალკე ჩანდეს
+  function offsetPath(ctx, a, s, d) {
+    var n = a.length / 2, i, x, y, nx, ny, px, py, l;
+    if (n < 2) return;
+    for (i = 0; i < n; i++) {
+      x = a[2 * i] * s; y = a[2 * i + 1] * s; nx = 0; ny = 0;
+      if (i > 0) { px = x - a[2 * i - 2] * s; py = y - a[2 * i - 1] * s; l = Math.sqrt(px * px + py * py) || 1; nx -= py / l; ny += px / l; }
+      if (i < n - 1) { px = a[2 * i + 2] * s - x; py = a[2 * i + 3] * s - y; l = Math.sqrt(px * px + py * py) || 1; nx -= py / l; ny += px / l; }
+      l = Math.sqrt(nx * nx + ny * ny) || 1;
+      if (i === 0) ctx.moveTo(x + nx / l * d, y + ny / l * d);
+      else ctx.lineTo(x + nx / l * d, y + ny / l * d);
+    }
+  }
+
+  function drawTraffic(canvas, items, z) {
+    var ctx = canvas.getContext('2d'), size = canvas.width, r = size / 512, i, k;
+    items.sort(function (a, b) { return TRAFFIC_RANK[a.kind] - TRAFFIC_RANK[b.kind]; });
+    ctx.clearRect(0, 0, size, size);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (i = 0; i < items.length; i++) {
+      var it = items[i], w = roadWidth(it.cls, z) * r;
+      ctx.strokeStyle = TRAFFIC_COLOR[it.kind];
+      ctx.lineWidth = w;
+      if (ctx.setLineDash) ctx.setLineDash(it.kind === 'closed' ? [w * 1.5, w * 1.5] : []);
+      ctx.beginPath();
+      for (k = 0; k < it.lines.length; k++) offsetPath(ctx, it.lines[k], size / it.ext, w / 2 + 0.5 * r);
+      ctx.stroke();
+    }
+  }
+
+  function trafficError(status) {
+    var msg = status === 401 ? 'Mapbox-ის გასაღები არასწორია' :
+              status === 403 ? 'Mapbox-ის გასაღები ამ საიტისთვის არ არის ნებადართული' :
+              status === 429 ? 'Mapbox-ის ლიმიტი ამოიწურა — საცობები დროებით არ ჩანს' : '';
+    if (msg && !trafficWarned[status]) { trafficWarned[status] = 1; toast(msg, 8000); }
+  }
+
+  // 512px ფილა: Mapbox-ის ფილები ამ ზომისთვისაა გათვლილი და 4-ჯერ ნაკლები მოთხოვნაა, ვიდრე 256px-ზე
+  var TrafficLayer = L.GridLayer.extend({
+    options: {
+      tileSize: 512, minZoom: TRAFFIC_MIN_ZOOM, maxNativeZoom: 17, pane: 'traffic',
+      updateWhenIdle: true, updateWhenZooming: false, keepBuffer: 1,
+      attribution: '&copy; <a href="https://www.mapbox.com/about/maps/">Mapbox</a>'
+    },
+    createTile: function (coords, done) {
+      var c = document.createElement('canvas');
+      c.width = c.height = Math.round(512 * Math.min(window.devicePixelRatio || 1, 2));
+      this._fetch(c, coords, done);
+      return c;
+    },
+    _fetch: function (c, coords, done) {
+      var url = 'https://api.mapbox.com/v4/mapbox.mapbox-traffic-v1/' + (coords.z - 1) + '/' + coords.x + '/' + coords.y +
+                '.vector.pbf?access_token=' + encodeURIComponent(MAPBOX_TOKEN) + '&fresh=' + trafficKey;
+      request(url, 15000, true, function (err, data) {
+        if (err) trafficError(err);
+        else { try { drawTraffic(c, decodeTile(data), coords.z); } catch (e) {} }
+        if (done) done(null, c);
+      });
+    },
+    // ძველ ფილებს ადგილზე ვანახლებთ, რომ რუკა არ "ციმციმებდეს"
+    refresh: function () {
+      for (var k in this._tiles) {
+        if (this._tiles.hasOwnProperty(k) && this._tiles[k].current) this._fetch(this._tiles[k].el, this._tiles[k].coords, null);
+      }
+    }
+  });
+
+  map.createPane('traffic');
+  map.getPane('traffic').style.zIndex = 350;        // ქუჩებს ზემოთ, მარკერებს ქვემოთ
+  map.getPane('traffic').style.pointerEvents = 'none';
+
+  var btnTraffic = document.getElementById('btnTraffic');
+
+  function setTraffic(on, quiet) {
+    if (on && !MAPBOX_TOKEN) {
+      if (!quiet) toast('საცობებისთვის კოდში Mapbox-ის გასაღები (MAPBOX_TOKEN) უნდა ჩაიწეროს', 8000);
+      on = false;
+    }
+    trafficOn = on;
+    btnTraffic.className = on ? 'btn on' : 'btn';
+    clearInterval(trafficTimer);
+    if (on) {
+      if (!traffic) traffic = new TrafficLayer();
+      trafficKey = Math.floor(new Date().getTime() / TRAFFIC_REFRESH);
+      traffic.addTo(map);
+      trafficTimer = setInterval(function () {
+        if (document.hidden) return;
+        trafficKey = Math.floor(new Date().getTime() / TRAFFIC_REFRESH);
+        traffic.refresh();
+      }, TRAFFIC_REFRESH);
+      if (!quiet && map.getZoom() < TRAFFIC_MIN_ZOOM) toast('საცობები უფრო ახლოს ჩანს — გაადიდე რუკა', 5000);
+    } else if (traffic) {
+      map.removeLayer(traffic);
+    }
+  }
+
+  btnTraffic.addEventListener('click', function () { setTraffic(!trafficOn); save(); });
+  setTraffic(saved.tr === true, true);
 
   /* ---------- ღამის რეჟიმი ---------- */
   var btnTheme = document.getElementById('btnTheme');
@@ -277,7 +480,8 @@
   }
 
   // XMLHttpRequest + საკუთარი timeout: fetch-ს და xhr.timeout-ს ძველი ბრაუზერები ყოველთვის არ იცნობენ
-  function getJSON(url, ms, cb) {
+  // შეცდომა: HTTP სტატუსი (რიცხვი) ან ტექსტი. binary = true -> პასუხი ArrayBuffer-ად
+  function request(url, ms, binary, cb) {
     var req = new XMLHttpRequest(), done = false, timer;
     function finish(err, data) {
       if (done) return;
@@ -288,17 +492,25 @@
     timer = setTimeout(function () { try { req.abort(); } catch (e) {} finish('დრო ამოიწურა'); }, ms);
     try {
       req.open('GET', url, true);
+      if (binary) req.responseType = 'arraybuffer';
       req.onload = function () {
-        if (req.status !== 200) { finish('HTTP ' + req.status); return; }
-        var data;
-        try { data = JSON.parse(req.responseText); } catch (e) { finish('არასწორი პასუხი'); return; }
-        finish(null, data);
+        if (req.status !== 200) finish(req.status || 'კავშირი ვერ დამყარდა');
+        else finish(null, binary ? req.response : req.responseText);
       };
       req.onerror = function () { finish('კავშირი ვერ დამყარდა'); };
       req.send();
     } catch (e) {
       finish('მოთხოვნა ვერ გაიგზავნა');
     }
+  }
+
+  function getJSON(url, ms, cb) {
+    request(url, ms, false, function (err, text) {
+      if (err) { cb(typeof err === 'number' ? 'HTTP ' + err : err); return; }
+      var data;
+      try { data = JSON.parse(text); } catch (e) { cb('არასწორი პასუხი'); return; }
+      cb(null, data);
+    });
   }
 
   function fromNominatim(data) {
