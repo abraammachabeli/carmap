@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>რუკა</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  /* ძველ ბრაუზერებზე სამუშაოდ: CSS ცვლადები, gap და inset არ არის გამოყენებული */
+  html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+  body { background: #e5e3df; font-family: Arial, Helvetica, sans-serif; -webkit-tap-highlight-color: transparent; }
+  body.dark { background: #1b1d21; }
+  #map { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: #e5e3df; }
+  body.dark #map { background: #1b1d21; }
+  /* ღამის რეჟიმი: იგივე ფილები, შებრუნებული ფერებით — დამატებითი სერვისი და გასაღები არ სჭირდება */
+  body.dark .leaflet-tile-pane { -webkit-filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.9);
+                                 filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.9); }
+
+  /* ძებნა */
+  #searchbox { position: absolute; top: 12px; left: 12px; right: 12px; max-width: 560px; z-index: 1000; }
+  #searchform { display: -webkit-flex; display: flex; background: #fff; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,.35); overflow: hidden; }
+  #q { -webkit-flex: 1; flex: 1; min-width: 0; height: 56px; padding: 0 16px; border: 0; outline: none;
+       font-size: 20px; color: #111; background: transparent; -webkit-appearance: none; border-radius: 0; }
+  #searchform button { width: 64px; height: 56px; border: 0; padding: 0; background: #1a73e8; cursor: pointer; }
+  #searchform button svg { width: 28px; height: 28px; fill: #fff; vertical-align: middle; }
+  #results { display: none; margin-top: 8px; max-height: 55vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+             background: #fff; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,.35); }
+  #results div { padding: 14px 16px; font-size: 18px; line-height: 1.3; color: #111; border-bottom: 1px solid #e6e6e6; cursor: pointer; }
+  #results div:last-child { border-bottom: 0; }
+  #results div:active { background: #e8f0fe; }
+  body.dark #searchform, body.dark #results { background: #2b2e33; }
+  body.dark #q, body.dark #results div { color: #eee; }
+  body.dark #results div { border-bottom-color: #3a3d42; }
+  body.dark #results div:active { background: #3a3f47; }
+
+  /* დიდი ღილაკები თითით სამართავად */
+  #controls { position: absolute; right: 12px; bottom: 32px; z-index: 1000; }
+  .btn { display: block; width: 64px; height: 64px; margin-top: 12px; padding: 0; border: 0; border-radius: 50%;
+         background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.35); cursor: pointer; }
+  .btn svg { width: 30px; height: 30px; fill: #333; vertical-align: middle; }
+  .btn:active { background: #e8f0fe; }
+  .btn.on { background: #1a73e8; }
+  .btn.on svg { fill: #fff; }
+  body.dark .btn { background: #2b2e33; }
+  body.dark .btn svg { fill: #eee; }
+  body.dark .btn.on { background: #1a73e8; }
+  body.dark .btn.on svg { fill: #fff; }
+
+  #toast { display: none; position: absolute; left: 50%; bottom: 32px; z-index: 1001; max-width: 70%;
+           padding: 12px 18px; border-radius: 10px; background: rgba(0,0,0,.82); color: #fff;
+           font-size: 18px; text-align: center; -webkit-transform: translateX(-50%); transform: translateX(-50%); }
+
+  .leaflet-control-attribution { font-size: 11px; }
+  body.dark .leaflet-control-attribution { background: rgba(0,0,0,.5); color: #aaa; }
+  body.dark .leaflet-control-attribution a { color: #8ab4f8; }
+  .leaflet-popup-content { font-size: 16px; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="searchbox">
+  <form id="searchform" autocomplete="off" action="#" onsubmit="return false;">
+    <input id="q" type="search" placeholder="მოძებნე ადგილი ან მისამართი" enterkeyhint="search">
+    <button type="submit" aria-label="ძებნა">
+      <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+    </button>
+  </form>
+  <div id="results"></div>
+</div>
+
+<div id="controls">
+  <button class="btn" id="btnTheme" type="button" aria-label="ღამის რეჟიმი">
+    <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.39 5.39 0 0 1-4.4 2.26 5.4 5.4 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+  </button>
+  <button class="btn" id="btnLocate" type="button" aria-label="ჩემი მდებარეობა">
+    <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm8.94 3A8.99 8.99 0 0 0 13 3.06V1h-2v2.06A8.99 8.99 0 0 0 3.06 11H1v2h2.06A8.99 8.99 0 0 0 11 20.94V23h2v-2.06A8.99 8.99 0 0 0 20.94 13H23v-2h-2.06zM12 19a7 7 0 1 1 0-14 7 7 0 0 1 0 14z"/></svg>
+  </button>
+  <button class="btn" id="btnIn" type="button" aria-label="გადიდება">
+    <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+  </button>
+  <button class="btn" id="btnOut" type="button" aria-label="დაპატარავება">
+    <svg viewBox="0 0 24 24"><path d="M19 13H5v-2h14v2z"/></svg>
+  </button>
+</div>
+
+<div id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+/* ES5-ით დაწერილი, რომ მანქანის ძველ ბრაუზერზეც იმუშაოს */
+(function () {
+  'use strict';
+
+  var KEY = 'carmap.v1';
+  var toastEl = document.getElementById('toast');
+  var toastTimer = null;
+
+  // low = მეორეხარისხოვანი შეტყობინება (GPS): უკვე ნაჩვენებ შეტყობინებას არ ფარავს
+  function toast(msg, ms, low) {
+    if (low && toastEl.style.display === 'block') return;
+    toastEl.textContent = msg;
+    toastEl.style.display = 'block';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.style.display = 'none'; }, ms || 4000);
+  }
+
+  if (typeof L === 'undefined') {
+    toast('რუკის ბიბლიოთეკა ვერ ჩაიტვირთა — შეამოწმე ინტერნეტი', 600000);
+    return;
+  }
+
+  function load() {
+    try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; }
+  }
+
+  var saved = load();
+  var isDark = saved.dark === true;
+
+  var map = L.map('map', {
+    center: saved.c || [42.2, 43.5],
+    zoom: typeof saved.z === 'number' ? saved.z : 7,
+    zoomControl: false,
+    preferCanvas: true,     // მარკერები canvas-ზე: ნაკლები DOM, მეტი სისწრაფე
+    fadeAnimation: false    // სუსტ CPU-ზე ზედმეტ ანიმაციას ვთიშავთ
+  });
+
+  /* რუკის ფილები (სურათები) — WebGL და ვექტორული რენდერი არ სჭირდება.
+     OSM-ის სერვერი გვერდიდან Referer-ს ითხოვს, ამიტომ გვერდი ვებ-სერვერიდან (https:// ან localhost)
+     უნდა გაიხსნას და არა ფაილად. თუ ჰოსტინგზეც "Access blocked" გამოჩნდება (ზოგი მანქანის ბრაუზერი
+     Referer-ს არ აგზავნის), აიღე CARTO-ს უფასო გასაღები https://carto.com/basemaps/apikey/
+     და ჩაწერე ქვემოთ — მაშინ რუკა CARTO-დან ჩაიტვირთება. */
+  var CARTO_KEY = '';
+
+  var tileOpts = { maxZoom: 19, keepBuffer: 1, updateWhenIdle: true, referrerPolicy: 'strict-origin-when-cross-origin' };
+  var OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+
+  var baseLayer = CARTO_KEY
+    ? L.tileLayer('https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=' + encodeURIComponent(CARTO_KEY),
+                  L.extend({ attribution: OSM_ATTR + ' &copy; <a href="https://carto.com/attributions">CARTO</a>' }, tileOpts))
+    : L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', L.extend({ attribution: OSM_ATTR }, tileOpts));
+  baseLayer.addTo(map);
+
+  if (location.protocol === 'file:' && !CARTO_KEY) {
+    toast('ფაილად გახსნილ გვერდზე OSM რუკას ბლოკავს — გახსენი ვებ-სერვერიდან (https:// ან http://localhost)', 12000);
+  }
+
+  function save() {
+    try {
+      var c = map.getCenter();
+      localStorage.setItem(KEY, JSON.stringify({ c: [c.lat, c.lng], z: map.getZoom(), dark: isDark }));
+    } catch (e) {}
+  }
+
+  /* ---------- ღამის რეჟიმი ---------- */
+  var btnTheme = document.getElementById('btnTheme');
+
+  function applyTheme() {
+    document.body.className = isDark ? 'dark' : '';
+    btnTheme.className = isDark ? 'btn on' : 'btn';
+  }
+
+  applyTheme();
+  btnTheme.addEventListener('click', function () { isDark = !isDark; applyTheme(); save(); });
+
+  document.getElementById('btnIn').addEventListener('click', function () { map.zoomIn(); });
+  document.getElementById('btnOut').addEventListener('click', function () { map.zoomOut(); });
+  map.on('moveend', save);
+
+  /* ---------- GPS / ჩემი მდებარეობა ---------- */
+  var btnLocate = document.getElementById('btnLocate');
+  var follow = true, watchId = null, meDot = null, meAcc = null, hadFix = false;
+
+  function setFollow(v) {
+    follow = v;
+    btnLocate.className = v ? 'btn on' : 'btn';
+  }
+
+  function onPos(p) {
+    var ll = L.latLng(p.coords.latitude, p.coords.longitude);
+    var r = p.coords.accuracy || 0;
+    if (!meDot) {
+      meAcc = L.circle(ll, { radius: r, stroke: false, fillColor: '#1a73e8', fillOpacity: 0.15, interactive: false }).addTo(map);
+      meDot = L.circleMarker(ll, { radius: 9, color: '#fff', weight: 3, fillColor: '#1a73e8', fillOpacity: 1, interactive: false }).addTo(map);
+    } else {
+      meAcc.setLatLng(ll).setRadius(r);
+      meDot.setLatLng(ll);
+    }
+    if (follow) {
+      if (!hadFix) map.setView(ll, Math.max(map.getZoom(), 16));
+      else map.panTo(ll, { animate: true, duration: 0.4 });
+    }
+    hadFix = true;
+  }
+
+  function onErr(e) {
+    if (e.code === 1) {
+      toast('მდებარეობაზე წვდომა დაბლოკილია ბრაუზერში', 6000, true);
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+      setFollow(false);
+    } else if (e.code === 2) {
+      toast('მდებარეობა ვერ დადგინდა', 4000, true);
+    }
+  }
+
+  function startWatch() {
+    if (watchId !== null) return;
+    if (!navigator.geolocation) {
+      toast('ამ ბრაუზერს მდებარეობის მხარდაჭერა არ აქვს', 6000, true);
+      setFollow(false);
+      return;
+    }
+    var h = location.hostname;
+    if (location.protocol === 'http:' && h !== 'localhost' && h !== '127.0.0.1') {
+      toast('GPS-ისთვის გვერდი https:// მისამართით უნდა გაიხსნას', 7000, true);
+    }
+    // ზოგი ბრაუზერი აქ შეცდომას აგდებს; ის დანარჩენ გვერდს (ძებნას) არ უნდა აჩერებდეს
+    try {
+      watchId = navigator.geolocation.watchPosition(onPos, onErr, { enableHighAccuracy: true, maximumAge: 3000 });
+    } catch (e) {
+      watchId = null;
+      setFollow(false);
+      toast('მდებარეობა ამ ბრაუზერში მიუწვდომელია', 6000, true);
+    }
+  }
+
+  btnLocate.addEventListener('click', function () {
+    setFollow(true);
+    if (meDot) map.setView(meDot.getLatLng(), Math.max(map.getZoom(), 16));
+    else toast('მდებარეობას ვეძებ…', 2500);
+    startWatch();
+  });
+
+  // ხელით გადაწევისას "მიყოლა" ირთვება
+  map.on('dragstart', function () { setFollow(false); });
+
+  /* ---------- ძებნა: ჯერ Nominatim, ვერ თუ მოხერხდა, Photon ---------- */
+  var form = document.getElementById('searchform');
+  var input = document.getElementById('q');
+  var results = document.getElementById('results');
+  var pin = null, searchSeq = 0;
+
+  function hideResults() {
+    results.style.display = 'none';
+    results.innerHTML = '';
+  }
+
+  // item = { name: '...', lat: number, lon: number }
+  function pick(item) {
+    var ll = L.latLng(item.lat, item.lon);
+    hideResults();
+    input.blur();
+    setFollow(false);
+    map.setView(ll, 16);
+    if (pin) map.removeLayer(pin);
+    var label = document.createElement('div');
+    label.textContent = item.name.split(',').slice(0, 2).join(',');
+    pin = L.circleMarker(ll, { radius: 11, color: '#fff', weight: 3, fillColor: '#e53935', fillOpacity: 1 }).addTo(map);
+    pin.bindPopup(label).openPopup();
+  }
+
+  function showResults(list) {
+    results.innerHTML = '';
+    toastEl.style.display = 'none';
+    for (var i = 0; i < list.length; i++) {
+      (function (item) {
+        var d = document.createElement('div');
+        d.textContent = item.name;
+        d.addEventListener('click', function () { pick(item); });
+        results.appendChild(d);
+      })(list[i]);
+    }
+    results.style.display = 'block';
+  }
+
+  // XMLHttpRequest + საკუთარი timeout: fetch-ს და xhr.timeout-ს ძველი ბრაუზერები ყოველთვის არ იცნობენ
+  function getJSON(url, ms, cb) {
+    var req = new XMLHttpRequest(), done = false, timer;
+    function finish(err, data) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      cb(err, data);
+    }
+    timer = setTimeout(function () { try { req.abort(); } catch (e) {} finish('დრო ამოიწურა'); }, ms);
+    try {
+      req.open('GET', url, true);
+      req.onload = function () {
+        if (req.status !== 200) { finish('HTTP ' + req.status); return; }
+        var data;
+        try { data = JSON.parse(req.responseText); } catch (e) { finish('არასწორი პასუხი'); return; }
+        finish(null, data);
+      };
+      req.onerror = function () { finish('კავშირი ვერ დამყარდა'); };
+      req.send();
+    } catch (e) {
+      finish('მოთხოვნა ვერ გაიგზავნა');
+    }
+  }
+
+  function fromNominatim(data) {
+    var out = [];
+    if (!data || !data.length) return out;
+    for (var i = 0; i < data.length; i++) {
+      var lat = parseFloat(data[i].lat), lon = parseFloat(data[i].lon);
+      if (!isNaN(lat) && !isNaN(lon)) out.push({ name: String(data[i].display_name || ''), lat: lat, lon: lon });
+    }
+    return out;
+  }
+
+  function fromPhoton(data) {
+    var out = [];
+    var f = data && data.features;
+    if (!f || !f.length) return out;
+    for (var i = 0; i < f.length; i++) {
+      var g = f[i].geometry, pr = f[i].properties || {};
+      if (!g || !g.coordinates) continue;
+      var street = pr.street ? (pr.street + (pr.housenumber ? ' ' + pr.housenumber : '')) : '';
+      var parts = [pr.name, street, pr.district, pr.city, pr.state, pr.country], seen = {}, label = [];
+      for (var j = 0; j < parts.length; j++) {
+        if (parts[j] && !seen[parts[j]]) { seen[parts[j]] = 1; label.push(parts[j]); }
+      }
+      out.push({ name: label.join(', '), lat: g.coordinates[1], lon: g.coordinates[0] });
+    }
+    return out;
+  }
+
+  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+  function doSearch(q) {
+    var my = ++searchSeq;           // ძველი ძებნის დაგვიანებულ პასუხს ვაიგნორებთ
+    hideResults();
+    toast('ვეძებ…', 20000);
+
+    var b = map.getBounds(), c = map.getCenter();
+    var viewbox = [
+      clamp(b.getWest(), -180, 180), clamp(b.getNorth(), -90, 90),
+      clamp(b.getEast(), -180, 180), clamp(b.getSouth(), -90, 90)
+    ].join(',');
+
+    var nomUrl = 'https://nominatim.openstreetmap.org/search?format=json&limit=6&accept-language=ka' +
+                 '&viewbox=' + viewbox + '&q=' + encodeURIComponent(q);
+    var phUrl = 'https://photon.komoot.io/api/?limit=6&q=' + encodeURIComponent(q) +
+                '&lat=' + c.lat.toFixed(4) + '&lon=' + c.lng.toFixed(4);
+
+    getJSON(nomUrl, 8000, function (err1, data1) {
+      if (my !== searchSeq) return;
+      var list = err1 ? [] : fromNominatim(data1);
+      if (list.length) { showResults(list); return; }
+
+      // Nominatim-მა ვერ იპოვა ან დაბლოკა — ვცდით სათადარიგო სერვისს
+      getJSON(phUrl, 8000, function (err2, data2) {
+        if (my !== searchSeq) return;
+        var list2 = err2 ? [] : fromPhoton(data2);
+        if (list2.length) { showResults(list2); return; }
+        if (err1 && err2) toast('ძებნა ვერ მოხერხდა — Nominatim: ' + err1 + '; Photon: ' + err2, 9000);
+        else toast('ვერაფერი მოიძებნა');
+      });
+    });
+  }
+
+  form.addEventListener('submit', function (ev) {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    var q = input.value.replace(/^\s+|\s+$/g, '');
+    if (q) doSearch(q);
+    return false;
+  });
+
+  map.on('click', hideResults);
+
+  /* GPS ბოლოს ირთვება, რომ მისმა შეცდომამ ძებნა არ გააჩეროს */
+  setFollow(true);
+  startWatch();
+})();
+</script>
+</body>
+</html>
