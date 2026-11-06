@@ -163,6 +163,9 @@
      გასაღები: https://account.mapbox.com/access-tokens/ (pk.-ით იწყება) */
   var MAPBOX_TOKEN = 'pk.eyJ1IjoiYWJyYWFtbWFjaGFiZWxpIiwiYSI6ImNtdzR5bGtmYTAyN2IyeHM5NmtnbGg5NzQifQ.oX-hL7_kDB1g3g0JLx8anw';
   var TRAFFIC_MIN_ZOOM = 10;
+  /* 256px ფილა, რუკის მასშტაბის ტოლი: Mapbox ჩვეულებრივ ქუჩებს მხოლოდ მე-14 მასშტაბის ფილებში აგზავნის,
+     ასე რომ, 512px (ერთით დაბალი მასშტაბი) ქუჩებს ერთი საფეხურით გვიან აჩენდა. */
+  var TRAFFIC_TILE = 256;
   var TRAFFIC_REFRESH = 5 * 60 * 1000;   // Mapbox მონაცემს ~8 წუთში ერთხელ ანახლებს
   var TRAFFIC_COLOR = { low: '#1db954', moderate: '#ff9800', heavy: '#e53935', severe: '#8e0000', closed: '#444444' };
   var TRAFFIC_RANK = { low: 1, moderate: 2, heavy: 3, severe: 4, closed: 5 };  // უარესი ზემოდან იხატება
@@ -250,11 +253,12 @@
     return lines;
   }
 
+  // სისქე მე-16 მასშტაბზე; შორიდან წვრილდება, რომ ქუჩების სიმრავლემ რუკა არ დაფაროს
   function roadWidth(cls, z) {
-    var w = (cls === 'motorway' || cls === 'trunk') ? 4.5 :
-            (cls === 'primary' || cls === 'secondary') ? 3.5 :
-            (cls === 'tertiary' || cls === 'street') ? 2.5 : 2;
-    return z < 13 ? w * 0.7 : w;
+    var w = (cls === 'motorway' || cls === 'trunk') ? 5 :
+            (cls === 'primary' || cls === 'secondary') ? 4 :
+            cls === 'tertiary' ? 3 : 2;
+    return w * (z >= 16 ? 1 : z === 15 ? 0.8 : z === 14 ? 0.6 : 0.5);
   }
 
   // ხაზს მოძრაობის მიმართულებით მარჯვნივ ვწევთ, რომ ორმხრივი გზის ორივე მხარე ცალ-ცალკე ჩანდეს
@@ -272,7 +276,7 @@
   }
 
   function drawTraffic(canvas, items, z) {
-    var ctx = canvas.getContext('2d'), size = canvas.width, r = size / 512, i, k;
+    var ctx = canvas.getContext('2d'), size = canvas.width, r = size / TRAFFIC_TILE, i, k;
     items.sort(function (a, b) { return TRAFFIC_RANK[a.kind] - TRAFFIC_RANK[b.kind]; });
     ctx.clearRect(0, 0, size, size);
     ctx.lineCap = 'round';
@@ -295,21 +299,20 @@
     if (msg && !trafficWarned[status]) { trafficWarned[status] = 1; toast(msg, 8000); }
   }
 
-  // 512px ფილა: Mapbox-ის ფილები ამ ზომისთვისაა გათვლილი და 4-ჯერ ნაკლები მოთხოვნაა, ვიდრე 256px-ზე
   var TrafficLayer = L.GridLayer.extend({
     options: {
-      tileSize: 512, minZoom: TRAFFIC_MIN_ZOOM, maxNativeZoom: 17, pane: 'traffic',
+      tileSize: TRAFFIC_TILE, minZoom: TRAFFIC_MIN_ZOOM, maxNativeZoom: 16, pane: 'traffic',
       updateWhenIdle: true, updateWhenZooming: false, keepBuffer: 1,
       attribution: '&copy; <a href="https://www.mapbox.com/about/maps/">Mapbox</a>'
     },
     createTile: function (coords, done) {
       var c = document.createElement('canvas');
-      c.width = c.height = Math.round(512 * Math.min(window.devicePixelRatio || 1, 2));
+      c.width = c.height = Math.round(TRAFFIC_TILE * Math.min(window.devicePixelRatio || 1, 2));
       this._fetch(c, coords, done);
       return c;
     },
     _fetch: function (c, coords, done) {
-      var url = 'https://api.mapbox.com/v4/mapbox.mapbox-traffic-v1/' + (coords.z - 1) + '/' + coords.x + '/' + coords.y +
+      var url = 'https://api.mapbox.com/v4/mapbox.mapbox-traffic-v1/' + coords.z + '/' + coords.x + '/' + coords.y +
                 '.vector.pbf?access_token=' + encodeURIComponent(MAPBOX_TOKEN) + '&fresh=' + trafficKey;
       request(url, 15000, true, function (err, data) {
         if (err) trafficError(err);
